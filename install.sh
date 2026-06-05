@@ -59,6 +59,7 @@ detect_release_url() {
 CHIRON_RELEASE_URL="${CHIRON_RELEASE_URL:-$(detect_release_url || true)}"
 DEV_CHECKOUT="${CHIRON_DEV_CHECKOUT:-$HOME/Desktop/chiron}"
 
+FRESH_INSTALL=0
 if command -v chiron >/dev/null 2>&1; then
   echo "✓ chiron already installed ($(command -v chiron)) — skipping install"
 elif [[ -n "$CHIRON_RELEASE_URL" ]]; then
@@ -68,6 +69,7 @@ elif [[ -n "$CHIRON_RELEASE_URL" ]]; then
   chmod +x "$TMP/chiron"
   sudo mv "$TMP/chiron" /usr/local/bin/chiron
   echo "✓ chiron installed at /usr/local/bin/chiron"
+  FRESH_INSTALL=1
 elif [[ -d "$DEV_CHECKOUT" ]] && command -v bun >/dev/null 2>&1; then
   # Dev fallback: wrapper that executes the checkout's source with bun —
   # source changes apply without recompiling (same install used in-house).
@@ -75,6 +77,7 @@ elif [[ -d "$DEV_CHECKOUT" ]] && command -v bun >/dev/null 2>&1; then
   printf '#!/bin/sh\nexec bun %s/src/index.ts "$@"\n' "$DEV_CHECKOUT" | sudo tee /usr/local/bin/chiron >/dev/null
   sudo chmod +x /usr/local/bin/chiron
   echo "✓ chiron installed at /usr/local/bin/chiron (dev mode)"
+  FRESH_INSTALL=1
 else
   echo "✗ chiron is not installed and no release URL is configured." >&2
   echo "  Dev machines: clone the chiron repo and install bun, then re-run." >&2
@@ -84,4 +87,14 @@ fi
 # ── Step 2 · One-paste setup: login (custom token) + agent pairing ─────────
 SETUP_ARGS=(--code "$CODE")
 [[ -n "$SERVER" ]] && SETUP_ARGS+=(--server "$SERVER")
-exec chiron setup "${SETUP_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+# NOT exec: we still print the shell-hash hint after setup finishes.
+chiron setup "${SETUP_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+
+# zsh caches its command table per session — a binary installed mid-session
+# isn't found until `rehash` (and with autocd + a same-named folder, typing
+# `chiron` silently cd's instead — found in-vivo 2026-06-05). Only relevant
+# when this run actually installed the binary; bash users are unaffected.
+if [[ "${FRESH_INSTALL:-0}" == "1" && "$(basename "${SHELL:-}")" == "zsh" ]]; then
+  echo ""
+  echo "  ↻ zsh note: if this shell says 'command not found: chiron', run:  rehash"
+fi
