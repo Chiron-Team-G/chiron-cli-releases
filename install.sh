@@ -60,27 +60,107 @@ CHIRON_RELEASE_URL="${CHIRON_RELEASE_URL:-$(detect_release_url || true)}"
 DEV_CHECKOUT="${CHIRON_DEV_CHECKOUT:-$HOME/Desktop/chiron}"
 
 FRESH_INSTALL=0
-if command -v chiron >/dev/null 2>&1; then
-  echo "✓ chiron already installed ($(command -v chiron)) — skipping install"
-elif [[ -n "$CHIRON_RELEASE_URL" ]]; then
-  echo "→ Installing chiron from release…"
-  TMP="$(mktemp -d)"
-  curl -fsSL "$CHIRON_RELEASE_URL" -o "$TMP/chiron"
-  chmod +x "$TMP/chiron"
-  sudo mv "$TMP/chiron" /usr/local/bin/chiron
-  echo "✓ chiron installed at /usr/local/bin/chiron"
+
+# What is the `chiron` on this machine, if any? Machines have HISTORY —
+# in-vivo 2026-06-05/06: teammates hit different failures because each Mac
+# carried a different past (the LEGACY chiron daemon shares the name AND a
+# `setup` subcommand; old CLI versions never upgraded; fresh Macs lack
+# /usr/local/bin). Classify before deciding:
+#   none   → not installed
+#   dev    → our bun dev-wrapper (leave it alone — source checkout machines)
+#   legacy → the OLD chiron daemon or a broken binary (REPLACE it)
+#   x.y.z  → the real CLI at that version (upgrade if a newer release exists)
+installed_kind() {
+  local bin ver
+  bin="$(command -v chiron 2>/dev/null)" || { echo "none"; return; }
+  if head -2 "$bin" 2>/dev/null | grep -q "exec bun"; then echo "dev"; return; fi
+  ver="$(chiron --version 2>/dev/null | head -1 || true)"
+  # The new CLI prints PLAIN semver; the legacy daemon prints
+  # "0.0.1 · built … · sha …" and a Gatekeeper-killed binary prints nothing.
+  if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$ver"; else echo "legacy"; fi
+}
+
+latest_version() {
+  # The /releases/latest redirect ends at …/tag/vX.Y.Z — no API token needed.
+  curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://github.com/Chiron-Team-G/chiron-cli-releases/releases/latest" 2>/dev/null |
+    sed 's|.*/tag/v\{0,1\}||'
+}
+
+install_binary() {
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL "$CHIRON_RELEASE_URL" -o "$tmp/chiron"; then
+    echo "✗ Download failed: $CHIRON_RELEASE_URL" >&2
+    echo "  Check your network (corporate VPN/proxy?) and that a release asset" >&2
+    echo "  exists for your platform ($(uname -s)/$(uname -m))." >&2
+    exit 1
+  fi
+  chmod +x "$tmp/chiron"
+  if command -v sudo >/dev/null 2>&1; then
+    # /usr/local/bin does NOT exist on fresh macOS (Apple Silicon Homebrew
+    # lives in /opt/homebrew) — mv won't create it (in-vivo 2026-06-05:
+    # teammate's one-paste died with "rename …: No such file or directory").
+    sudo mkdir -p /usr/local/bin
+    sudo mv "$tmp/chiron" /usr/local/bin/chiron
+    echo "✓ chiron installed at /usr/local/bin/chiron"
+  else
+    # No sudo (locked-down corporate machine) → user-writable fallback.
+    mkdir -p "$HOME/.local/bin"
+    mv "$tmp/chiron" "$HOME/.local/bin/chiron"
+    export PATH="$HOME/.local/bin:$PATH"
+    echo "✓ chiron installed at ~/.local/bin/chiron (no sudo available)"
+    echo "  Add this line to your shell profile to make it permanent:"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
   FRESH_INSTALL=1
-elif [[ -d "$DEV_CHECKOUT" ]] && command -v bun >/dev/null 2>&1; then
-  # Dev fallback: wrapper that executes the checkout's source with bun —
-  # source changes apply without recompiling (same install used in-house).
-  echo "→ Installing chiron (dev wrapper over $DEV_CHECKOUT)…"
-  printf '#!/bin/sh\nexec bun %s/src/index.ts "$@"\n' "$DEV_CHECKOUT" | sudo tee /usr/local/bin/chiron >/dev/null
-  sudo chmod +x /usr/local/bin/chiron
-  echo "✓ chiron installed at /usr/local/bin/chiron (dev mode)"
-  FRESH_INSTALL=1
-else
-  echo "✗ chiron is not installed and no release URL is configured." >&2
-  echo "  Dev machines: clone the chiron repo and install bun, then re-run." >&2
+}
+
+KIND="$(installed_kind)"
+case "$KIND" in
+  dev)
+    echo "✓ chiron dev wrapper detected ($(command -v chiron)) — leaving it alone"
+    ;;
+  none | legacy)
+    if [[ "$KIND" == "legacy" ]]; then
+      echo "→ Found the legacy chiron daemon at $(command -v chiron) — replacing it with the chiron CLI…"
+    fi
+    if [[ -n "$CHIRON_RELEASE_URL" ]]; then
+      echo "→ Installing chiron from release…"
+      install_binary
+    elif [[ -d "$DEV_CHECKOUT" ]] && command -v bun >/dev/null 2>&1; then
+      # Dev fallback: wrapper that executes the checkout's source with bun —
+      # source changes apply without recompiling (same install used in-house).
+      echo "→ Installing chiron (dev wrapper over $DEV_CHECKOUT)…"
+      sudo mkdir -p /usr/local/bin
+      printf '#!/bin/sh\nexec bun %s/src/index.ts "$@"\n' "$DEV_CHECKOUT" | sudo tee /usr/local/bin/chiron >/dev/null
+      sudo chmod +x /usr/local/bin/chiron
+      echo "✓ chiron installed at /usr/local/bin/chiron (dev mode)"
+      FRESH_INSTALL=1
+    else
+      echo "✗ chiron is not installed and no release URL is configured." >&2
+      echo "  Dev machines: clone the chiron repo and install bun, then re-run." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    # Real CLI at version $KIND — self-upgrade when a newer release exists
+    # ("already installed — skipping" froze every machine at whatever
+    # version it first got; teammates on v0.1.x never saw v0.2.0).
+    LATEST="$(latest_version || true)"
+    if [[ -n "$LATEST" && "$LATEST" != "$KIND" && -n "$CHIRON_RELEASE_URL" ]]; then
+      echo "→ chiron $KIND installed — upgrading to $LATEST…"
+      install_binary
+    else
+      echo "✓ chiron already installed ($KIND) — up to date"
+    fi
+    ;;
+esac
+
+# Post-install sanity: the binary must actually answer from PATH.
+if ! chiron --version >/dev/null 2>&1; then
+  echo "✗ chiron installed but not responding from PATH." >&2
+  echo "  Open a NEW terminal tab (or run \`rehash\` on zsh) and re-paste the command." >&2
   exit 1
 fi
 
