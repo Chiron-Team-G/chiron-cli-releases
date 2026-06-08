@@ -149,7 +149,7 @@ case "$KIND" in
     # version it first got; teammates on v0.1.x never saw v0.2.0).
     LATEST="$(latest_version || true)"
     if [[ -n "$LATEST" && "$LATEST" != "$KIND" && -n "$CHIRON_RELEASE_URL" ]]; then
-      echo "→ chiron $KIND installed — upgrading to $LATEST…"
+      echo "→ chiron $KIND installed — upgrading to ${LATEST}…"
       install_binary
     else
       echo "✓ chiron already installed ($KIND) — up to date"
