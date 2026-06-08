@@ -60,6 +60,10 @@ CHIRON_RELEASE_URL="${CHIRON_RELEASE_URL:-$(detect_release_url || true)}"
 DEV_CHECKOUT="${CHIRON_DEV_CHECKOUT:-$HOME/Desktop/chiron}"
 
 FRESH_INSTALL=0
+# Set to 1 by install_binary (the release-download path) so the legacy-data
+# purge runs ONLY when the real release CLI is what ends up installed — never
+# on a dev-wrapper machine.
+INSTALLED_RELEASE=0
 
 # What is the `chiron` on this machine, if any? Machines have HISTORY —
 # in-vivo 2026-06-05/06: teammates hit different failures because each Mac
@@ -114,6 +118,55 @@ install_binary() {
     echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
   fi
   FRESH_INSTALL=1
+  INSTALLED_RELEASE=1
+}
+
+# ── Legacy daemon cleanup ───────────────────────────────────────────────────
+# The OLD chiron daemon (github.com/Chiron-Team-G/chiron-releases) installed a
+# binary also named `chiron` to the SAME locations. In-vivo: teammates ended up
+# with the daemon in ~/.local/bin (earlier on PATH) SHADOWING the new CLI in
+# /usr/local/bin — `chiron --version` kept showing the daemon, never the CLI.
+# We remove every legacy `chiron` on PATH (keeping the new CLI + any dev wrapper)
+# and the daemon's data dirs. We NEVER touch ~/.chiron/cli/ (the CLI's own
+# login/pairing, written by `chiron setup`) or ~/.claude*.
+
+# Is the binary at $1 our bun dev wrapper? (leave those alone — dev machines.)
+is_dev_wrapper() { head -2 "$1" 2>/dev/null | grep -q "exec bun"; }
+
+# Remove a file, using sudo only when its directory isn't user-writable.
+remove_path() {
+  if [[ -w "$(dirname "$1")" ]]; then rm -f "$1"; else sudo rm -f "$1"; fi
+}
+
+# Keep the new CLI (and any dev wrapper); remove every other `chiron` on PATH so
+# nothing shadows it. Idempotent: a second run finds nothing to remove.
+sweep_legacy_binaries() {
+  local keep dirs d p
+  keep="${INSTALL_PATH:-$(command -v chiron 2>/dev/null || true)}"
+  IFS=: read -ra dirs <<< "$PATH"
+  for d in "${dirs[@]}"; do
+    p="$d/chiron"
+    [[ -f "$p" && -x "$p" ]] || continue
+    [[ -n "$keep" && "$p" == "$keep" ]] && continue
+    is_dev_wrapper "$p" && continue
+    if pgrep -f "$p" >/dev/null 2>&1; then
+      echo "  ⚠ a chiron process from $p looks like it's running — close it when you can." >&2
+    fi
+    echo "  · removing shadowing legacy binary: $p"
+    remove_path "$p" || echo "  ⚠ could not remove $p — delete it by hand." >&2
+  done
+}
+
+# Remove the legacy daemon's data dirs. PRESERVE ~/.chiron/cli/ (the new CLI's
+# state) — never `rm -rf ~/.chiron`.
+purge_legacy_data() {
+  local d target
+  for d in config.json memory logs sessions runs; do
+    target="$HOME/.chiron/$d"
+    if [[ -e "$target" ]]; then
+      rm -rf "$target" && echo "  · removed legacy daemon data: ~/.chiron/$d"
+    fi
+  done
 }
 
 KIND="$(installed_kind)"
@@ -157,11 +210,32 @@ case "$KIND" in
     ;;
 esac
 
+# ── Legacy daemon cleanup (dev-wrapper machines are skipped entirely) ───────
+if [[ "$KIND" != "dev" ]]; then
+  sweep_legacy_binaries
+  # Purge daemon DATA only when the real release CLI is what's installed —
+  # never on a freshly-made dev wrapper (KIND none/legacy + no release URL).
+  if [[ "$KIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$INSTALLED_RELEASE" == "1" ]]; then
+    purge_legacy_data
+  fi
+fi
+
 # Post-install sanity: the binary must actually answer from PATH.
 if ! chiron --version >/dev/null 2>&1; then
   echo "✗ chiron installed but not responding from PATH." >&2
   echo "  Open a NEW terminal tab (or run \`rehash\` on zsh) and re-paste the command." >&2
   exit 1
+fi
+
+# And on real-CLI installs, make sure the chiron that WINS on PATH is the new
+# CLI (plain semver) — not a legacy daemon we somehow missed. Warning only, so a
+# cold-start version hiccup never blocks the install.
+if [[ "$KIND" != "dev" ]] && ! is_dev_wrapper "$(command -v chiron)"; then
+  RESOLVED_VER="$(chiron --version 2>/dev/null | head -1 || true)"
+  if ! [[ "$RESOLVED_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "  ⚠ '$(command -v chiron)' still reports '${RESOLVED_VER:-nothing}' — a legacy daemon may remain ahead on PATH." >&2
+    echo "    Open a new terminal; if it persists, delete that binary by hand." >&2
+  fi
 fi
 
 # ── Step 2 · One-paste setup: login (custom token) + agent pairing ─────────
