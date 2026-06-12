@@ -30,10 +30,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$CODE" ]]; then
-  echo "✗ Missing --code (copy the full command from the agent wizard)" >&2
-  exit 1
-fi
+# No --code → UPDATE-ONLY mode, but only for machines that already have the
+# CLI (decided below, after we classify what's installed). Fresh installs
+# still require the code from the agent wizard — pairing needs it.
+UPDATE_ONLY=0
 
 # ── Step 1 · Install chiron if missing ──────────────────────────────────────
 # Release binaries live in the distribution repo (one asset per OS/arch,
@@ -89,6 +89,18 @@ latest_version() {
   curl -fsSLI -o /dev/null -w '%{url_effective}' \
     "https://github.com/Chiron-Team-G/chiron-cli-releases/releases/latest" 2>/dev/null |
     sed 's|.*/tag/v\{0,1\}||'
+}
+
+# True when $1 > $2 (plain x.y.z). Pure bash — macOS `sort -V` isn't a given.
+version_gt() {
+  local IFS=. i
+  local -a a b
+  read -ra a <<< "$1"; read -ra b <<< "$2"
+  for i in 0 1 2; do
+    (( ${a[i]:-0} > ${b[i]:-0} )) && return 0
+    (( ${a[i]:-0} < ${b[i]:-0} )) && return 1
+  done
+  return 1
 }
 
 install_binary() {
@@ -170,6 +182,19 @@ purge_legacy_data() {
 }
 
 KIND="$(installed_kind)"
+
+# Update-only is legal only when a real CLI (or dev wrapper) is already here:
+# upgrading a binary needs no code, pairing a fresh machine does.
+if [[ -z "$CODE" ]]; then
+  if [[ "$KIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$KIND" == "dev" ]]; then
+    UPDATE_ONLY=1
+    echo "→ No --code given: update-only mode (binary upgrade; login/pairing untouched)"
+  else
+    echo "✗ Missing --code (copy the full command from the agent wizard)" >&2
+    exit 1
+  fi
+fi
+
 case "$KIND" in
   dev)
     echo "✓ chiron dev wrapper detected ($(command -v chiron)) — leaving it alone"
@@ -201,7 +226,9 @@ case "$KIND" in
     # ("already installed — skipping" froze every machine at whatever
     # version it first got; teammates on v0.1.x never saw v0.2.0).
     LATEST="$(latest_version || true)"
-    if [[ -n "$LATEST" && "$LATEST" != "$KIND" && -n "$CHIRON_RELEASE_URL" ]]; then
+    # Strictly NEWER only — never downgrade a binary that's ahead of the
+    # published release (mid-flight releases, pre-release builds).
+    if [[ -n "$LATEST" && -n "$CHIRON_RELEASE_URL" ]] && version_gt "$LATEST" "$KIND"; then
       echo "→ chiron $KIND installed — upgrading to ${LATEST}…"
       install_binary
     else
@@ -236,6 +263,13 @@ if [[ "$KIND" != "dev" ]] && ! is_dev_wrapper "$(command -v chiron)"; then
     echo "  ⚠ '$(command -v chiron)' still reports '${RESOLVED_VER:-nothing}' — a legacy daemon may remain ahead on PATH." >&2
     echo "    Open a new terminal; if it persists, delete that binary by hand." >&2
   fi
+fi
+
+# Update-only stops here: binary is current, state was never touched.
+if [[ "$UPDATE_ONLY" == "1" ]]; then
+  echo "✓ Update-only run complete ($(chiron --version 2>/dev/null | head -1)) — login/pairing untouched."
+  echo "  Tip: from v0.3.0 the CLI can do this itself — just run:  chiron update"
+  exit 0
 fi
 
 # ── Step 2 · One-paste setup: login (custom token) + agent pairing ─────────
