@@ -18,6 +18,17 @@
 # Result: one paste = installed + authenticated + agent connected.
 set -euo pipefail
 
+# ── Windows guard ────────────────────────────────────────────────────────────
+# This bash installer doesn't apply on Windows (Git Bash / MSYS / Cygwin) —
+# point the user at the PowerShell one, which installs the .exe + edits PATH.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    echo "✗ Windows detected — use the PowerShell installer instead:" >&2
+    echo "    irm https://raw.githubusercontent.com/Chiron-Team-G/chiron-cli-releases/main/install.ps1 | iex" >&2
+    exit 1
+    ;;
+esac
+
 # ── Args (forwarded to `chiron setup`) ──────────────────────────────────────
 CODE=""
 SERVER=""
