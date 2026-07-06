@@ -117,7 +117,9 @@ version_gt() {
 install_binary() {
   local tmp
   tmp="$(mktemp -d)"
-  if ! curl -fsSL "$CHIRON_RELEASE_URL" -o "$tmp/chiron"; then
+  # --progress-bar (no -s): the binary is ~60-112MB — a silent download reads
+  # as HUNG on a slow link (operator request 2026-07-06: show progress).
+  if ! curl -fL --progress-bar "$CHIRON_RELEASE_URL" -o "$tmp/chiron"; then
     echo "✗ Download failed: $CHIRON_RELEASE_URL" >&2
     echo "  Check your network (corporate VPN/proxy?) and that a release asset" >&2
     echo "  exists for your platform ($(uname -s)/$(uname -m))." >&2
@@ -233,15 +235,30 @@ case "$KIND" in
     fi
     ;;
   *)
-    # Real CLI at version $KIND — self-upgrade when a newer release exists
-    # ("already installed — skipping" froze every machine at whatever
+    # Real CLI at version $KIND — OFFER the upgrade when a newer release
+    # exists ("already installed — skipping" froze every machine at whatever
     # version it first got; teammates on v0.1.x never saw v0.2.0).
     LATEST="$(latest_version || true)"
     # Strictly NEWER only — never downgrade a binary that's ahead of the
     # published release (mid-flight releases, pre-release builds).
     if [[ -n "$LATEST" && -n "$CHIRON_RELEASE_URL" ]] && version_gt "$LATEST" "$KIND"; then
-      echo "→ chiron $KIND installed — upgrading to ${LATEST}…"
-      install_binary
+      # ASK before replacing a WORKING install — a new release could carry a
+      # regression, so the user consents (operator decision 2026-07-06; same
+      # philosophy as the CLI's own startup y/n). stdin is usually the curl
+      # pipe here, so the answer is read from /dev/tty; with no TTY at all
+      # (CI) we keep the historical behavior and upgrade.
+      DO_UPGRADE=1
+      if [[ -r /dev/tty && -w /dev/tty ]]; then
+        printf "→ chiron %s installed — %s is available. Update now? [Y/n] " "$KIND" "$LATEST" >/dev/tty
+        IFS= read -r REPLY </dev/tty || REPLY=""
+        case "$REPLY" in [nN]*) DO_UPGRADE=0 ;; esac
+      fi
+      if [[ "$DO_UPGRADE" == "1" ]]; then
+        echo "→ Upgrading chiron $KIND → ${LATEST}…"
+        install_binary
+      else
+        echo "→ Keeping chiron $KIND — upgrade anytime with:  chiron update"
+      fi
     else
       echo "✓ chiron already installed ($KIND) — up to date"
     fi

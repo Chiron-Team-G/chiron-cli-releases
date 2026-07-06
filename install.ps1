@@ -41,10 +41,22 @@ function Install-Binary {
   $tmp = Join-Path $env:TEMP "chiron-dl-$PID.exe"
 
   Info "Downloading $Asset…"
-  try {
-    Invoke-WebRequest -Uri "$RepoBase/$Asset" -OutFile $tmp -UseBasicParsing
-  } catch {
-    Fail "Download failed: $RepoBase/$Asset  ($($_.Exception.Message))"
+  # Prefer curl.exe (ships with Windows 10 1803+): its --progress-bar shows
+  # live progress — the binary is ~112MB and a silent download reads as HUNG
+  # on a slow link (operator request 2026-07-06). IWR stays as the fallback
+  # (its own progress is disabled above because it slows downloads a lot).
+  $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curlExe) {
+    & curl.exe -fL --progress-bar "$RepoBase/$Asset" -o $tmp
+    if ($LASTEXITCODE -ne 0) {
+      Fail "Download failed: $RepoBase/$Asset  (curl exit $LASTEXITCODE)"
+    }
+  } else {
+    try {
+      Invoke-WebRequest -Uri "$RepoBase/$Asset" -OutFile $tmp -UseBasicParsing
+    } catch {
+      Fail "Download failed: $RepoBase/$Asset  ($($_.Exception.Message))"
+    }
   }
 
   # Integrity: compare against the release's checksums.txt.
@@ -86,10 +98,37 @@ if (-not $installed) {
   }
   Install-Binary
 } else {
-  # Already installed → let the CLI self-update (handles the running-exe
-  # shuffle + the anti-downgrade guard itself).
-  Info "chiron already installed — checking for updates…"
-  & $ExePath update
+  # Already installed → OFFER the update, never force it (operator decision
+  # 2026-07-06: a new release could carry a regression — the user consents;
+  # same philosophy as the CLI's own startup y/n prompt). `chiron update`
+  # still does the heavy lifting (running-exe shuffle + anti-downgrade).
+  $current = (& $ExePath --version 2>$null | Select-Object -First 1)
+  $latest = $null
+  try {
+    $req = [System.Net.HttpWebRequest]::Create("https://github.com/Chiron-Team-G/chiron-cli-releases/releases/latest")
+    $req.Method = "HEAD"
+    $req.AllowAutoRedirect = $true
+    $res = $req.GetResponse()
+    if ($res.ResponseUri.AbsoluteUri -match '/tag/v?([0-9][^/]*)') { $latest = $Matches[1] }
+    $res.Close()
+  } catch { }
+
+  if ($latest -and $current -match '^\d+\.\d+\.\d+$' -and ([version]$latest -gt [version]$current)) {
+    $ans = Read-Host "chiron $current installed — $latest is available. Update now? [Y/n]"
+    if ($ans -notmatch '^[nN]') {
+      & $ExePath update
+    } else {
+      Info "Keeping chiron $current — update anytime with:  chiron update"
+    }
+  } elseif ($current -match '^\d+\.\d+\.\d+$') {
+    Ok "chiron already installed ($current) — up to date"
+  } else {
+    # Version unreadable (first-run AV scan / broken binary) — let the CLI's
+    # own update flow sort it out, like before.
+    Info "chiron already installed — checking for updates…"
+    & $ExePath update
+  }
+
   if (-not $Code) {
     # Update-only run (no code): done.
     Ok "Update-only run complete — login/pairing untouched."
