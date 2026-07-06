@@ -89,6 +89,17 @@ function Install-Binary {
   $env:Path = "$BinDir;$env:Path"
 }
 
+# Does the installed chiron actually RUN? (prints plain semver). A binary that
+# starts and dies silently is the no-AVX2 crash signature — see below.
+function Test-ChironRuns {
+  try {
+    $v = (& $ExePath --version 2>$null | Select-Object -First 1)
+  } catch {
+    $v = $null
+  }
+  return ($v -match '^\d+\.\d+\.\d+$')
+}
+
 # ── Flow ─────────────────────────────────────────────────────────────────────
 $installed = Test-Path $ExePath
 
@@ -97,7 +108,32 @@ if (-not $installed) {
     Fail "Missing -Code. Copy the full command from the agent wizard (it carries your one-time code)."
   }
   Install-Binary
+  # AVX2 fallback: the standard build needs a ~2013+ CPU; on older machines it
+  # crashes SILENTLY (exit 0xC0000005, no output — in-vivo: an i7-3770S,
+  # 2026-07-06). If the fresh install doesn't answer, swap in the baseline
+  # (compatibility) build automatically — its self-update stays baseline too.
+  if (-not (Test-ChironRuns)) {
+    Warn "chiron didn't respond — this CPU may not support AVX2 (pre-2013). Installing the compatibility build…"
+    $script:Asset = "chiron-windows-x64-baseline.exe"
+    Install-Binary
+    if (Test-ChironRuns) {
+      Ok "Compatibility build working."
+    } else {
+      Warn "Still no response — this can also be the antivirus scanning the new binary (first run only)."
+      Warn "Wait ~60 seconds, open a NEW terminal and try:  chiron --version"
+    }
+  }
 } else {
+  # Installed but SILENT (starts and dies, no output) → the no-AVX2 crash
+  # signature. Reinstall going straight to the baseline build — re-running
+  # `chiron update` from a crashed binary can never fix itself.
+  if (-not (Test-ChironRuns)) {
+    Warn "chiron is installed but not responding — reinstalling with the compatibility build (pre-2013 CPU / no AVX2)…"
+    $script:Asset = "chiron-windows-x64-baseline.exe"
+    Install-Binary
+    if (Test-ChironRuns) { Ok "Compatibility build working." }
+  }
+
   # Already installed → OFFER the update, never force it (operator decision
   # 2026-07-06: a new release could carry a regression — the user consents;
   # same philosophy as the CLI's own startup y/n prompt). `chiron update`
