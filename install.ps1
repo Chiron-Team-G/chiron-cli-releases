@@ -20,7 +20,33 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # speeds up Invoke-WebRequest a lot
 
-$RepoBase = "https://github.com/Chiron-Team-G/chiron-cli-releases/releases/latest/download"
+# Two channels share one releases repo, told apart by GitHub's pre-release flag.
+# `stable` resolves through /releases/latest, which by definition SKIPS
+# pre-releases — so a prod machine cannot see a dev build. `dev` resolves the
+# newest -dev tag and addresses the release BY TAG: /latest would serve PROD's
+# assets. Set with CHIRON_CHANNEL or -Channel dev (install-dev.ps1 passes it).
+$Channel = if ($env:CHIRON_CHANNEL) { $env:CHIRON_CHANNEL } else { "stable" }
+if ($args -contains "-Channel") {
+  $i = [array]::IndexOf($args, "-Channel")
+  if ($i -ge 0 -and $i + 1 -lt $args.Count) { $Channel = $args[$i + 1] }
+}
+$ReleasesRepo = "Chiron-Team-G/chiron-cli-releases"
+
+$DevTag = $null
+if ($Channel -eq "dev") {
+  try {
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$ReleasesRepo/releases?per_page=30" `
+      -Headers @{ Accept = "application/vnd.github+json"; "User-Agent" = "chiron-install" }
+    $DevTag = ($rel | Where-Object { $_.tag_name -like "*-dev*" } | Select-Object -First 1).tag_name
+  } catch { }
+  if (-not $DevTag) {
+    Write-Error "No dev release found in $ReleasesRepo. Publish one with: scripts/release.sh --dev"
+    exit 1
+  }
+  $RepoBase = "https://github.com/$ReleasesRepo/releases/download/$DevTag"
+} else {
+  $RepoBase = "https://github.com/$ReleasesRepo/releases/latest/download"
+}
 $Asset    = "chiron-windows-x64.exe"
 $BinDir   = Join-Path $env:LOCALAPPDATA "chiron\bin"
 $ExePath  = Join-Path $BinDir "chiron.exe"
@@ -76,6 +102,16 @@ function Install-Binary {
   # (the running-exe shuffle only matters for `chiron update`).
   Move-Item -Path $tmp -Destination $ExePath -Force
   Ok "chiron installed at $ExePath"
+
+  # Remember WHICH CHANNEL this binary came from — `chiron update` reads it.
+  # Without it a dev machine silently swaps to the prod binary the day prod
+  # publishes a higher version, and the work-order features vanish with no
+  # error to explain it.
+  try {
+    $cliRoot = if ($env:CHIRON_HOME) { Join-Path $env:CHIRON_HOME "cli" } else { Join-Path $env:USERPROFILE ".chiron\cli" }
+    New-Item -ItemType Directory -Force -Path $cliRoot | Out-Null
+    Set-Content -Path (Join-Path $cliRoot "channel") -Value $Channel -NoNewline
+  } catch { }
 
   # PATH (USER scope — no admin). Prepend so this chiron wins.
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -149,14 +185,26 @@ if (-not $installed) {
     $res.Close()
   } catch { }
 
-  if ($latest -and $current -match '^\d+\.\d+\.\d+$' -and ([version]$latest -gt [version]$current)) {
+  # On the dev channel the tag is already known, and [version] cannot parse a
+  # prerelease suffix at all — `[version]"0.14.0-dev.1"` throws. The dev channel
+  # has one published build at a time, so compare by inequality instead.
+  if ($Channel -eq "dev") { $latest = $DevTag -replace '^v', '' }
+  $semver = '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$'
+  $needs_update = $false
+  if ($latest -and $current -match $semver) {
+    if ($Channel -eq "dev") { $needs_update = ($latest -ne $current) }
+    elseif ($current -match '^\d+\.\d+\.\d+$' -and $latest -match '^\d+\.\d+\.\d+$') {
+      $needs_update = ([version]$latest -gt [version]$current)
+    }
+  }
+  if ($needs_update) {
     $ans = Read-Host "chiron $current installed — $latest is available. Update now? [Y/n]"
     if ($ans -notmatch '^[nN]') {
       & $ExePath update
     } else {
       Info "Keeping chiron $current — update anytime with:  chiron update"
     }
-  } elseif ($current -match '^\d+\.\d+\.\d+$') {
+  } elseif ($current -match $semver) {
     Ok "chiron already installed ($current) — up to date"
   } else {
     # Version unreadable (first-run AV scan / broken binary) — let the CLI's

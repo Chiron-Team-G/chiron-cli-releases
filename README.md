@@ -34,6 +34,13 @@ answer correctly.
 curl -fsSL https://raw.githubusercontent.com/Chiron-Team-G/chiron-cli-releases/main/install-dev.sh | bash -s -- --code CHIR-XXXXXX-XXXXXX --server <dev url>
 ```
 
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Chiron-Team-G/chiron-cli-releases/main/install-dev.ps1))) -Code CHIR-XXXXXX-XXXXXX -Server <dev url>
+```
+
+You should not need to type either one: the agent wizard renders the command for
+the environment you are on, dev included.
+
 `install-dev.sh` only picks the channel; it downloads the same `install.sh`. The
 install writes `~/.chiron/cli/channel`, which `chiron update` reads — so a dev
 machine stays on the dev channel instead of being pulled onto the prod binary
