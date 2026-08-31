@@ -67,6 +67,14 @@ for _a in "$@"; do [[ "$_a" == "--dev" ]] && CHANNEL="dev"; done
 
 RELEASES_REPO="Chiron-Team-G/chiron-cli-releases"
 
+# The ONE version pattern. Dev-channel builds carry a prerelease suffix
+# (0.14.0-dev.1) and every check that assumed three plain numeric fields
+# silently misread them: update-only mode refused to run without a --code, and
+# the post-install check warned that a "legacy daemon" was shadowing a binary
+# that was in fact the one just installed. Kept in a variable so the next check
+# cannot drift from the rest.
+SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+
 # Newest DEV tag. /releases/latest is useless here (it skips pre-releases), so
 # this reads the releases list. Unauthenticated and rate-limited, but it runs
 # once per install. The `-dev` in the tag is what identifies the channel —
@@ -133,7 +141,7 @@ installed_kind() {
   # 0.14.0-dev.1, and without it they fall through to "legacy" — which means
   # the installer would classify a current dev CLI as the OLD daemon and run
   # the legacy-data purge against a perfectly good install.
-  if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then echo "$ver"; else echo "legacy"; fi
+  if [[ "$ver" =~ $SEMVER_RE ]]; then echo "$ver"; else echo "legacy"; fi
 }
 
 latest_version() {
@@ -255,7 +263,7 @@ KIND="$(installed_kind)"
 # Update-only is legal only when a real CLI (or dev wrapper) is already here:
 # upgrading a binary needs no code, pairing a fresh machine does.
 if [[ -z "$CODE" ]]; then
-  if [[ "$KIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$KIND" == "dev" ]]; then
+  if [[ "$KIND" =~ $SEMVER_RE || "$KIND" == "dev" ]]; then
     UPDATE_ONLY=1
     echo "→ No --code given: update-only mode (binary upgrade; login/pairing untouched)"
   else
@@ -337,7 +345,7 @@ if [[ "$KIND" != "dev" ]]; then
   sweep_legacy_binaries
   # Purge daemon DATA only when the real release CLI is what's installed —
   # never on a freshly-made dev wrapper (KIND none/legacy + no release URL).
-  if [[ "$KIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "$INSTALLED_RELEASE" == "1" ]]; then
+  if [[ "$KIND" =~ $SEMVER_RE || "$INSTALLED_RELEASE" == "1" ]]; then
     purge_legacy_data
   fi
 fi
@@ -354,7 +362,7 @@ fi
 # cold-start version hiccup never blocks the install.
 if [[ "$KIND" != "dev" ]] && ! is_dev_wrapper "$(command -v chiron)"; then
   RESOLVED_VER="$(chiron --version 2>/dev/null | head -1 || true)"
-  if ! [[ "$RESOLVED_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  if ! [[ "$RESOLVED_VER" =~ $SEMVER_RE ]]; then
     echo "  ⚠ '$(command -v chiron)' still reports '${RESOLVED_VER:-nothing}' — a legacy daemon may remain ahead on PATH." >&2
     echo "    Open a new terminal; if it persists, delete that binary by hand." >&2
   fi

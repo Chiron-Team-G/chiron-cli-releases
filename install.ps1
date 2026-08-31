@@ -133,7 +133,9 @@ function Test-ChironRuns {
   } catch {
     $v = $null
   }
-  return ($v -match '^\d+\.\d+\.\d+$')
+  # Accepts a prerelease suffix: a dev-channel binary reports 0.14.0-dev.1,
+  # and rejecting it here means the installer decides chiron does not run.
+  return ($v -match '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')
 }
 
 # ── Flow ─────────────────────────────────────────────────────────────────────
