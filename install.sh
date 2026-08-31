@@ -50,7 +50,44 @@ UPDATE_ONLY=0
 # Release binaries live in the distribution repo (one asset per OS/arch,
 # published with the GitHub release). CHIRON_RELEASE_URL overrides for
 # pinning a specific version or testing a pre-release asset.
-RELEASE_BASE="https://github.com/Chiron-Team-G/chiron-cli-releases/releases/latest/download"
+# ── Channel ─────────────────────────────────────────────────────────────────
+# Two channels share one releases repo, told apart by GitHub's pre-release flag:
+#
+#   stable  the prod binary. Resolved through /releases/latest, which by
+#           definition SKIPS pre-releases — so a prod machine cannot see a dev
+#           build even if one was published a minute ago.
+#   dev     the team binary, published with `release.sh --dev`. Its tag carries
+#           a `-dev` suffix, which is how we find it without a token.
+#
+# Set with CHIRON_CHANNEL=dev or the --dev flag (install-dev.sh passes it).
+CHANNEL="${CHIRON_CHANNEL:-stable}"
+for _a in "$@"; do [[ "$_a" == "--dev" ]] && CHANNEL="dev"; done
+[[ "$CHANNEL" == "stable" || "$CHANNEL" == "dev" ]] || {
+  echo "✗ Unknown channel: $CHANNEL (expected 'stable' or 'dev')" >&2; exit 1; }
+
+RELEASES_REPO="Chiron-Team-G/chiron-cli-releases"
+
+# Newest DEV tag. /releases/latest is useless here (it skips pre-releases), so
+# this reads the releases list. Unauthenticated and rate-limited, but it runs
+# once per install. The `-dev` in the tag is what identifies the channel —
+# release.sh refuses to publish a dev build without it.
+dev_version() {
+  curl -fsSL -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=30" 2>/dev/null |
+    grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*-dev[^"]*"' |
+    head -1 | sed 's/.*"v\{0,1\}\([^"]*\)"$/\1/'
+}
+
+if [[ "$CHANNEL" == "dev" ]]; then
+  DEV_TAG="$(dev_version || true)"
+  [[ -n "$DEV_TAG" ]] || {
+    echo "✗ No dev release found in $RELEASES_REPO." >&2
+    echo "  Publish one with: scripts/release.sh --dev" >&2
+    exit 1; }
+  RELEASE_BASE="https://github.com/$RELEASES_REPO/releases/download/v$DEV_TAG"
+else
+  RELEASE_BASE="https://github.com/$RELEASES_REPO/releases/latest/download"
+fi
 detect_release_url() {
   local os arch
   case "$(uname -s)" in
@@ -92,13 +129,20 @@ installed_kind() {
   ver="$(chiron --version 2>/dev/null | head -1 || true)"
   # The new CLI prints PLAIN semver; the legacy daemon prints
   # "0.0.1 · built … · sha …" and a Gatekeeper-killed binary prints nothing.
-  if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "$ver"; else echo "legacy"; fi
+  # The optional `-suffix` matters: dev-channel builds are versioned
+  # 0.14.0-dev.1, and without it they fall through to "legacy" — which means
+  # the installer would classify a current dev CLI as the OLD daemon and run
+  # the legacy-data purge against a perfectly good install.
+  if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then echo "$ver"; else echo "legacy"; fi
 }
 
 latest_version() {
+  # On dev the tag is already resolved; comparing a `-dev.N` suffix with
+  # version_gt (which reads three numeric fields) would be meaningless anyway.
+  if [[ "$CHANNEL" == "dev" ]]; then echo "$DEV_TAG"; return; fi
   # The /releases/latest redirect ends at …/tag/vX.Y.Z — no API token needed.
   curl -fsSLI -o /dev/null -w '%{url_effective}' \
-    "https://github.com/Chiron-Team-G/chiron-cli-releases/releases/latest" 2>/dev/null |
+    "https://github.com/$RELEASES_REPO/releases/latest" 2>/dev/null |
     sed 's|.*/tag/v\{0,1\}||'
 }
 
@@ -144,6 +188,18 @@ install_binary() {
   fi
   FRESH_INSTALL=1
   INSTALLED_RELEASE=1
+
+  # Remember WHICH CHANNEL this binary came from. Without it `chiron update`
+  # only knows /releases/latest — the prod channel — so the day prod publishes a
+  # version above the dev build, every dev machine silently swaps to the prod
+  # binary and the work-order features vanish with no error to explain it.
+  # A file rather than a key in config.json: install.sh must not have to parse
+  # and re-emit JSON, and the channel outlives any `chiron setup` that rewrites
+  # the config.
+  local cli_root="${CHIRON_HOME:-$HOME/.chiron}/cli"
+  if mkdir -p "$cli_root" 2>/dev/null; then
+    printf '%s\n' "$CHANNEL" > "$cli_root/channel" 2>/dev/null || true
+  fi
 }
 
 # ── Legacy daemon cleanup ───────────────────────────────────────────────────
@@ -241,7 +297,18 @@ case "$KIND" in
     LATEST="$(latest_version || true)"
     # Strictly NEWER only — never downgrade a binary that's ahead of the
     # published release (mid-flight releases, pre-release builds).
-    if [[ -n "$LATEST" && -n "$CHIRON_RELEASE_URL" ]] && version_gt "$LATEST" "$KIND"; then
+    # That test cannot apply on the dev channel: version_gt reads three numeric
+    # fields, and `0.14.0-dev.2` vs `0.14.0-dev.1` differ in a fourth. The dev
+    # channel has one published build at a time, so "install it unless it is
+    # already what we run" is simpler AND handles re-publishing a fix under the
+    # same version, which the prod rule deliberately refuses.
+    NEEDS_INSTALL=0
+    if [[ "$CHANNEL" == "dev" ]]; then
+      [[ -n "$LATEST" && "$LATEST" != "$KIND" ]] && NEEDS_INSTALL=1
+    else
+      version_gt "$LATEST" "$KIND" && NEEDS_INSTALL=1
+    fi
+    if [[ -n "$LATEST" && -n "$CHIRON_RELEASE_URL" && "$NEEDS_INSTALL" == "1" ]]; then
       # ASK before replacing a WORKING install — a new release could carry a
       # regression, so the user consents (operator decision 2026-07-06; same
       # philosophy as the CLI's own startup y/n). stdin is usually the curl

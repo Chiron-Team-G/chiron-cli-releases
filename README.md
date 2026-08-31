@@ -16,6 +16,33 @@ One paste = chiron installed (skipped if present) + signed in (the code
 carries your verified web session — no password on the terminal) + agent
 paired. The wizard detects the link and completes on its own.
 
+## Channels
+
+Two channels share this repo, told apart by GitHub's pre-release flag.
+
+| | who | how |
+|---|---|---|
+| **stable** | everyone, prod included | `install.sh` → `/releases/latest` |
+| **dev** | the team, against the dev backend | `install-dev.sh` → newest `-dev` tag |
+
+`/releases/latest` **excludes pre-releases by definition**, so a machine on the
+stable channel cannot see a dev build even when one was published a minute ago.
+That is the whole protection — no flag to get wrong, no backend that has to
+answer correctly.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chiron-Team-G/chiron-cli-releases/main/install-dev.sh | bash -s -- --code CHIR-XXXXXX-XXXXXX --server <dev url>
+```
+
+`install-dev.sh` only picks the channel; it downloads the same `install.sh`. The
+install writes `~/.chiron/cli/channel`, which `chiron update` reads — so a dev
+machine stays on the dev channel instead of being pulled onto the prod binary
+the day prod publishes a higher version.
+
+Publish with `scripts/release.sh --dev` from AF-Chiron-CLI. It requires a
+prerelease suffix (`0.14.0-dev.1`) and refuses the reverse: a dev build without
+one reaches everybody, a prod build with one reaches nobody.
+
 ## Binaries
 
 Each release ships per-platform assets, auto-selected by `install.sh`:
