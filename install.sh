@@ -61,9 +61,12 @@ UPDATE_ONLY=0
 #
 # Set with CHIRON_CHANNEL=dev or the --dev flag (install-dev.sh passes it).
 CHANNEL="${CHIRON_CHANNEL:-stable}"
-for _a in "$@"; do [[ "$_a" == "--dev" ]] && CHANNEL="dev"; done
-[[ "$CHANNEL" == "stable" || "$CHANNEL" == "dev" ]] || {
-  echo "✗ Unknown channel: $CHANNEL (expected 'stable' or 'dev')" >&2; exit 1; }
+for _a in "$@"; do
+  [[ "$_a" == "--dev" ]] && CHANNEL="dev"
+  [[ "$_a" == "--beta" ]] && CHANNEL="beta"
+done
+[[ "$CHANNEL" == "stable" || "$CHANNEL" == "dev" || "$CHANNEL" == "beta" ]] || {
+  echo "✗ Unknown channel: $CHANNEL (expected 'stable', 'dev' or 'beta')" >&2; exit 1; }
 
 RELEASES_REPO="Chiron-Team-G/chiron-cli-releases"
 
@@ -82,15 +85,15 @@ SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 dev_version() {
   curl -fsSL -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=30" 2>/dev/null |
-    grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*-dev[^"]*"' |
+    grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*-'"$CHANNEL"'[^"]*"' |
     head -1 | sed 's/.*"v\{0,1\}\([^"]*\)"$/\1/'
 }
 
-if [[ "$CHANNEL" == "dev" ]]; then
+if [[ "$CHANNEL" != "stable" ]]; then
   DEV_TAG="$(dev_version || true)"
   [[ -n "$DEV_TAG" ]] || {
-    echo "✗ No dev release found in $RELEASES_REPO." >&2
-    echo "  Publish one with: scripts/release.sh --dev" >&2
+    echo "✗ No $CHANNEL release found in $RELEASES_REPO." >&2
+    echo "  Publish one with: scripts/release.sh --$CHANNEL" >&2
     exit 1; }
   RELEASE_BASE="https://github.com/$RELEASES_REPO/releases/download/v$DEV_TAG"
 else
@@ -147,7 +150,7 @@ installed_kind() {
 latest_version() {
   # On dev the tag is already resolved; comparing a `-dev.N` suffix with
   # version_gt (which reads three numeric fields) would be meaningless anyway.
-  if [[ "$CHANNEL" == "dev" ]]; then echo "$DEV_TAG"; return; fi
+  if [[ "$CHANNEL" != "stable" ]]; then echo "$DEV_TAG"; return; fi
   # The /releases/latest redirect ends at …/tag/vX.Y.Z — no API token needed.
   curl -fsSLI -o /dev/null -w '%{url_effective}' \
     "https://github.com/$RELEASES_REPO/releases/latest" 2>/dev/null |
@@ -311,7 +314,7 @@ case "$KIND" in
     # already what we run" is simpler AND handles re-publishing a fix under the
     # same version, which the prod rule deliberately refuses.
     NEEDS_INSTALL=0
-    if [[ "$CHANNEL" == "dev" ]]; then
+    if [[ "$CHANNEL" != "stable" ]]; then
       [[ -n "$LATEST" && "$LATEST" != "$KIND" ]] && NEEDS_INSTALL=1
     else
       version_gt "$LATEST" "$KIND" && NEEDS_INSTALL=1

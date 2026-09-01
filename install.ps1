@@ -26,6 +26,10 @@ $ProgressPreference = "SilentlyContinue"  # speeds up Invoke-WebRequest a lot
 # newest -dev tag and addresses the release BY TAG: /latest would serve PROD's
 # assets. Set with CHIRON_CHANNEL or -Channel dev (install-dev.ps1 passes it).
 $Channel = if ($env:CHIRON_CHANNEL) { $env:CHIRON_CHANNEL } else { "stable" }
+if ($Channel -notin @("stable", "dev", "beta")) {
+  Write-Error "Unknown channel: $Channel (expected 'stable', 'dev' or 'beta')"
+  exit 1
+}
 if ($args -contains "-Channel") {
   $i = [array]::IndexOf($args, "-Channel")
   if ($i -ge 0 -and $i + 1 -lt $args.Count) { $Channel = $args[$i + 1] }
@@ -33,14 +37,14 @@ if ($args -contains "-Channel") {
 $ReleasesRepo = "Chiron-Team-G/chiron-cli-releases"
 
 $DevTag = $null
-if ($Channel -eq "dev") {
+if ($Channel -ne "stable") {
   try {
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$ReleasesRepo/releases?per_page=30" `
       -Headers @{ Accept = "application/vnd.github+json"; "User-Agent" = "chiron-install" }
-    $DevTag = ($rel | Where-Object { $_.tag_name -like "*-dev*" } | Select-Object -First 1).tag_name
+    $DevTag = ($rel | Where-Object { $_.tag_name -like "*-$Channel*" } | Select-Object -First 1).tag_name
   } catch { }
   if (-not $DevTag) {
-    Write-Error "No dev release found in $ReleasesRepo. Publish one with: scripts/release.sh --dev"
+    Write-Error "No $Channel release found in $ReleasesRepo. Publish one with: scripts/release.sh --$Channel"
     exit 1
   }
   $RepoBase = "https://github.com/$ReleasesRepo/releases/download/$DevTag"
@@ -190,11 +194,11 @@ if (-not $installed) {
   # On the dev channel the tag is already known, and [version] cannot parse a
   # prerelease suffix at all — `[version]"0.14.0-dev.1"` throws. The dev channel
   # has one published build at a time, so compare by inequality instead.
-  if ($Channel -eq "dev") { $latest = $DevTag -replace '^v', '' }
+  if ($Channel -ne "stable") { $latest = $DevTag -replace '^v', '' }
   $semver = '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$'
   $needs_update = $false
   if ($latest -and $current -match $semver) {
-    if ($Channel -eq "dev") { $needs_update = ($latest -ne $current) }
+    if ($Channel -ne "stable") { $needs_update = ($latest -ne $current) }
     elseif ($current -match '^\d+\.\d+\.\d+$' -and $latest -match '^\d+\.\d+\.\d+$') {
       $needs_update = ([version]$latest -gt [version]$current)
     }
