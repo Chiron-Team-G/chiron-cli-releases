@@ -206,7 +206,19 @@ if (-not $installed) {
   if ($needs_update) {
     $ans = Read-Host "chiron $current installed — $latest is available. Update now? [Y/n]"
     if ($ans -notmatch '^[nN]') {
-      & $ExePath update
+      if ($Channel -ne "stable") {
+        # NUNCA delegar en el binario instalado fuera del canal stable: uno
+        # anterior a los canales sólo mira /releases/latest, que EXCLUYE las
+        # pre-releases, así que contesta "already up to date" y se queda donde
+        # está — y después falla autenticando porque es de otra era. Pasó en
+        # vivo (2/9, Windows): el instalador encontró dev.12, delegó en un
+        # 0.12.4 y la persona terminó con "API key not valid". Bajamos el
+        # binario nosotros, que es lo que install.sh ya hacía.
+        Info "Installing $latest from the $Channel channel…"
+        Install-Binary
+      } else {
+        & $ExePath update
+      }
     } else {
       Info "Keeping chiron $current — update anytime with:  chiron update"
     }
@@ -216,7 +228,7 @@ if (-not $installed) {
     # Version unreadable (first-run AV scan / broken binary) — let the CLI's
     # own update flow sort it out, like before.
     Info "chiron already installed — checking for updates…"
-    & $ExePath update
+    if ($Channel -ne "stable") { Install-Binary } else { & $ExePath update }
   }
 
   if (-not $Code) {
