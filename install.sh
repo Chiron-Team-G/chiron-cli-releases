@@ -213,6 +213,23 @@ install_binary() {
   fi
 }
 
+# ── Install manifest ─────────────────────────────────────────────────────────
+# Machine-readable record of what this installer left behind, for other tools
+# on the same machine (e.g. the nuev /health endpoint) to read WITHOUT having
+# to exec `chiron --version`. Written on every successful run so machines
+# installed before the manifest existed pick it up on their next update.
+# Never fatal: a manifest write failure must not break an install that worked.
+write_manifest() {
+  local ver root
+  ver="$(chiron --version 2>/dev/null | head -1 || true)"
+  [[ "$ver" =~ $SEMVER_RE ]] || return 0
+  root="${CHIRON_HOME:-$HOME/.chiron}"
+  mkdir -p "$root" 2>/dev/null || return 0
+  printf '{\n  "version": "%s",\n  "channel": "%s",\n  "installed_at": "%s"\n}\n' \
+    "$ver" "$CHANNEL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$root/manifest.json" 2>/dev/null || true
+}
+
 # ── Legacy daemon cleanup ───────────────────────────────────────────────────
 # The OLD chiron daemon (github.com/Chiron-Team-G/chiron-releases) installed a
 # binary also named `chiron` to the SAME locations. In-vivo: teammates ended up
@@ -370,6 +387,9 @@ if [[ "$KIND" != "dev" ]] && ! is_dev_wrapper "$(command -v chiron)"; then
     echo "    Open a new terminal; if it persists, delete that binary by hand." >&2
   fi
 fi
+
+# The binary answers from PATH — record what's installed for other tools.
+write_manifest
 
 # Update-only stops here: binary is current, state was never touched.
 if [[ "$UPDATE_ONLY" == "1" ]]; then

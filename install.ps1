@@ -129,6 +129,26 @@ function Install-Binary {
   $env:Path = "$BinDir;$env:Path"
 }
 
+# Machine-readable record of what this installer left behind, for other tools
+# on the same machine (e.g. the nuev /health endpoint) to read WITHOUT having
+# to exec `chiron --version`. Written on every successful run so machines
+# installed before the manifest existed pick it up on their next update.
+# Never fatal: a manifest write failure must not break an install that worked.
+function Write-Manifest {
+  try {
+    $v = (& $ExePath --version 2>$null | Select-Object -First 1)
+    if ($v -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { return }
+    $root = if ($env:CHIRON_HOME) { $env:CHIRON_HOME } else { Join-Path $env:USERPROFILE ".chiron" }
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $manifest = @{
+      version      = $v
+      channel      = $Channel
+      installed_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    } | ConvertTo-Json
+    Set-Content -Path (Join-Path $root "manifest.json") -Value $manifest
+  } catch { }
+}
+
 # Does the installed chiron actually RUN? (prints plain semver). A binary that
 # starts and dies silently is the no-AVX2 crash signature — see below.
 function Test-ChironRuns {
@@ -233,11 +253,14 @@ if (-not $installed) {
 
   if (-not $Code) {
     # Update-only run (no code): done.
+    Write-Manifest
     Ok "Update-only run complete — login/pairing untouched."
     Write-Host "  Tip: you can also just run:  chiron update" -ForegroundColor DarkGray
     exit 0
   }
 }
+
+Write-Manifest
 
 # ── Pairing (login + agent) ──────────────────────────────────────────────────
 $setupArgs = @("setup", "--code", $Code)
