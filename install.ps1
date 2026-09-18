@@ -219,8 +219,17 @@ if (-not $installed) {
   $needs_update = $false
   if ($latest -and $current -match $semver) {
     if ($Channel -ne "stable") { $needs_update = ($latest -ne $current) }
-    elseif ($current -match '^\d+\.\d+\.\d+$' -and $latest -match '^\d+\.\d+\.\d+$') {
-      $needs_update = ([version]$latest -gt [version]$current)
+    else {
+      # Stable: compare the numeric cores, and let a plain release beat a
+      # prerelease of the same core — a machine coming from beta/dev must move
+      # to `0.14.0` even though `0.14.0-beta.7` is what it runs. Before this the
+      # suffixed $current failed the plain-x.y.z test, $needs_update stayed
+      # $false and the installer said "already installed" (2026-09-18).
+      $core_latest  = ($latest  -split '-', 2)[0]
+      $core_current = ($current -split '-', 2)[0]
+      $vl = [version]$core_latest; $vc = [version]$core_current
+      if ($vl -gt $vc) { $needs_update = $true }
+      elseif ($vl -eq $vc -and $latest -notmatch '-' -and $current -match '-') { $needs_update = $true }
     }
   }
   if ($needs_update) {

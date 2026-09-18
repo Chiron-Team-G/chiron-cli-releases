@@ -157,16 +157,25 @@ latest_version() {
     sed 's|.*/tag/v\{0,1\}||'
 }
 
-# True when $1 > $2 (plain x.y.z). Pure bash — macOS `sort -V` isn't a given.
+# True when $1 > $2. Pure bash — macOS `sort -V` isn't a given. Prerelease-
+# aware in the ONE way the stable channel needs: `0.14.0` is newer than
+# `0.14.0-beta.7` (a machine moving from beta/dev to prod must upgrade), and a
+# suffix never enters the arithmetic. Before this, `0.14.0-beta.7` split on
+# dots into `0 14 0-beta 7` and `(( 0 > 0-beta ))` died with "beta: unbound
+# variable" — the stable installer crashed for every beta/dev user on the day
+# of the first stable cut (2026-09-18). Two suffixed versions with the same
+# core compare equal here; the non-stable channels never call this.
 version_gt() {
+  local core_a="${1%%-*}" core_b="${2%%-*}"
   local IFS=. i
   local -a a b
-  read -ra a <<< "$1"; read -ra b <<< "$2"
+  read -ra a <<< "$core_a"; read -ra b <<< "$core_b"
   for i in 0 1 2; do
     (( ${a[i]:-0} > ${b[i]:-0} )) && return 0
     (( ${a[i]:-0} < ${b[i]:-0} )) && return 1
   done
-  return 1
+  # Same core: a plain release beats a prerelease of it.
+  [[ "$1" != *-* && "$2" == *-* ]]
 }
 
 install_binary() {
